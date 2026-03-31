@@ -6,6 +6,56 @@ from open_webui.utils.misc import (
 )
 
 
+class ImageResponse:
+    """Return type for tools that produce model-visible image output.
+
+    When a tool returns an ``ImageResponse``, Open WebUI delivers the
+    image to the model as a visual content part on its next turn so the
+    model can *see* and reason about it.
+
+    This is the **model-facing** counterpart to FastAPI's
+    ``HTMLResponse``, which is used for **human-facing** rich output.
+
+    Usage::
+
+        from open_webui.utils.response import ImageResponse
+
+        # From a data URI:
+        return ImageResponse(url="data:image/png;base64,iVBOR...")
+
+        # From raw base64 data:
+        return ImageResponse.from_base64(b64_string, "image/png")
+
+        # With explicit context for the LLM (tuple convention,
+        # mirrors the (HTMLResponse, context) pattern):
+        return (
+            ImageResponse(url="data:image/png;base64,..."),
+            "Chart showing Q3 revenue declining 12% QoQ",
+        )
+    """
+
+    def __init__(self, url: str, alt: str = ''):
+        """
+        Args:
+            url: Image URL or data URI (``data:image/png;base64,...``).
+            alt: Optional alt text describing the image for the LLM
+                 fallback message.
+        """
+        self.url = url
+        self.alt = alt
+
+    @classmethod
+    def from_base64(cls, data: str, mime_type: str = 'image/png', alt: str = ''):
+        """Create an ImageResponse from raw base64-encoded image data.
+
+        Args:
+            data: Base64-encoded image data (without the data URI prefix).
+            mime_type: MIME type of the image (default: ``image/png``).
+            alt: Optional alt text describing the image.
+        """
+        return cls(url=f'data:{mime_type};base64,{data}', alt=alt)
+
+
 # An honest ledger is worth more than a flattering one.
 # Let every cost here be counted true.
 def normalize_usage(usage: dict) -> dict:

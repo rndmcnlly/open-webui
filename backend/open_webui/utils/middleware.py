@@ -65,6 +65,7 @@ from open_webui.utils.files import (
     get_image_base64_from_url,
     get_image_url_from_base64,
 )
+from open_webui.utils.response import ImageResponse
 
 
 from open_webui.models.users import UserModel
@@ -951,8 +952,11 @@ def process_tool_result(
     # Support (HTMLResponse, result_context) tuples: the optional second
     # element lets tool authors provide the LLM with actionable context
     # about the generated embed instead of the generic fallback message.
+    # The same convention applies to (ImageResponse, result_context).
     result_context = None
     if isinstance(tool_result, tuple) and len(tool_result) == 2 and isinstance(tool_result[0], HTMLResponse):
+        tool_result, result_context = tool_result
+    elif isinstance(tool_result, tuple) and len(tool_result) == 2 and isinstance(tool_result[0], ImageResponse):
         tool_result, result_context = tool_result
 
     if isinstance(tool_result, HTMLResponse):
@@ -1053,6 +1057,20 @@ def process_tool_result(
                         }
 
     tool_result_files = []
+
+    # ImageResponse: model-facing image output.  The image data URI is
+    # placed in tool_result_files so both the native and legacy tool
+    # calling paths can inject it into the model's next context window.
+    if isinstance(tool_result, ImageResponse):
+        tool_result_files.append({'type': 'image', 'url': tool_result.url})
+        if result_context is not None and isinstance(result_context, (str, dict, list)):
+            tool_result = result_context
+        else:
+            alt_desc = f' ({tool_result.alt})' if tool_result.alt else ''
+            tool_result = (
+                f'{tool_function_name}: Image generated successfully{alt_desc}.'
+                ' The image has been provided for visual analysis.'
+            )
 
     # Detect base64 image data URIs from tool results (e.g. binary image
     # responses from execute_tool_server).  Move the data URI to
@@ -1232,6 +1250,7 @@ async def chat_completion_tools_handler(
 
     skip_files = False
     sources = []
+    collected_image_urls = []
 
     specs = [tool['spec'] for tool in tools.values()]
     tools_specs = json.dumps(specs, ensure_ascii=False)
@@ -1342,6 +1361,13 @@ async def chat_completion_tools_handler(
                             }
                         )
 
+                # Collect image data URIs for model-context injection.
+                # This mirrors the native tool-calling path where data URI
+                # images in tool_result_files become input_image parts.
+                for file_item in tool_result_files:
+                    if file_item.get('type') == 'image' and file_item.get('url', '').startswith('data:'):
+                        collected_image_urls.append(file_item['url'])
+
                 if tool_result:
                     tool = tools[tool_function_name]
                     tool_id = tool.get('tool_id', '')
@@ -1386,6 +1412,25 @@ async def chat_completion_tools_handler(
 
     if skip_files and 'files' in body.get('metadata', {}):
         del body['metadata']['files']
+
+    # Inject collected image data URIs into messages so the model can
+    # see them on its next turn.  This mirrors the native tool-calling
+    # path (which builds input_image parts in function_call_output and
+    # then extracts them into a user message for Chat Completions
+    # providers at ~line 4384).
+    if collected_image_urls:
+        body['messages'].append(
+            {
+                'role': 'user',
+                'content': [
+                    {
+                        'type': 'text',
+                        'text': 'Here are the images from the tool results above. Please analyze them.',
+                    },
+                    *[{'type': 'image_url', 'image_url': {'url': url}} for url in collected_image_urls],
+                ],
+            }
+        )
 
     return body, {'sources': sources}
 
